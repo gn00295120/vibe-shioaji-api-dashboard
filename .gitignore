@@ -27,3 +27,6 @@ shioaji.log
 # Database
 postgres_data/
 
+# Marketing posts (personal)
+docs/MARKETING_POST*
+docs/MEDIUM*
