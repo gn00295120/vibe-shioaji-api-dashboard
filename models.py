@@ -26,7 +26,8 @@ class OrderHistory(Base):
     __tablename__ = "order_history"
 
     id = Column(Integer, primary_key=True, index=True)
-    symbol = Column(String, nullable=False, index=True)
+    symbol = Column(String, nullable=False, index=True)  # Shioaji symbol (e.g., MXF202601, MXFR1)
+    code = Column(String, nullable=True, index=True)  # Exchange code (e.g., MXFA6)
     action = Column(String, nullable=False)
     quantity = Column(Integer, nullable=False)
     status = Column(String, nullable=False)
@@ -50,6 +51,7 @@ class OrderHistory(Base):
         return {
             "id": self.id,
             "symbol": self.symbol,
+            "code": self.code,
             "action": self.action,
             "quantity": self.quantity,
             "status": self.status,

@@ -47,6 +47,7 @@ class OrderRequest(BaseModel):
 class OrderHistoryResponse(BaseModel):
     id: int
     symbol: str
+    code: Optional[str] = None
     action: str
     quantity: int
     status: str
@@ -563,6 +564,13 @@ async def create_order(
     order_history.order_id = result_data.get("order_id")
     order_history.seqno = result_data.get("seqno")
     order_history.ordno = result_data.get("ordno")
+    
+    # Update symbol/code with resolved values from trading worker
+    # (user may send code like MXFA6, but we store canonical symbol like MXF202601)
+    if result_data.get("symbol"):
+        order_history.symbol = result_data.get("symbol")
+    if result_data.get("code"):
+        order_history.code = result_data.get("code")
     
     # For exit orders, update quantity with actual traded quantity from position
     # (user's request quantity is ignored for exits - actual is determined by position size)

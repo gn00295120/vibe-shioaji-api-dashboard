@@ -585,7 +585,8 @@ class TradingWorker:
                     "action": action_str,
                     "quantity": quantity,
                     "original_quantity": original_quantity,
-                    "symbol": symbol,
+                    "symbol": contract.symbol,
+                    "code": contract.code,
                 },
             )
 
@@ -651,7 +652,8 @@ class TradingWorker:
                     "ordno": getattr(result.order, "ordno", ""),
                     "action": action.value if hasattr(action, "value") else str(action),
                     "quantity": quantity,
-                    "symbol": symbol,
+                    "symbol": contract.symbol,
+                    "code": contract.code,
                 },
             )
 
