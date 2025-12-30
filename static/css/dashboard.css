@@ -144,10 +144,11 @@ button {
 .stat-card.pnl-negative .value { color: #ff6b6b; }
 
 /* Table */
-table { width: 100%; border-collapse: collapse; background: rgba(255, 255, 255, 0.05); border-radius: 12px; overflow: hidden; }
-th, td { padding: 1rem; text-align: left; border-bottom: 1px solid rgba(255, 255, 255, 0.1); }
-th { background: rgba(0, 0, 0, 0.3); font-weight: 600; color: #a1a1aa; font-size: 0.875rem; text-transform: uppercase; letter-spacing: 0.05em; }
+table { width: 100%; border-collapse: collapse; background: rgba(255, 255, 255, 0.05); border-radius: 12px; overflow: hidden; table-layout: fixed; }
+th, td { padding: 0.75rem 0.5rem; text-align: left; border-bottom: 1px solid rgba(255, 255, 255, 0.1); overflow: hidden; text-overflow: ellipsis; }
+th { background: rgba(0, 0, 0, 0.3); font-weight: 600; color: #a1a1aa; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; white-space: nowrap; }
 tr:hover { background: rgba(255, 255, 255, 0.05); }
+td { vertical-align: middle; }
 
 /* Status & Action Badges */
 .status, .direction { display: inline-block; padding: 0.25rem 0.75rem; border-radius: 9999px; font-size: 0.75rem; font-weight: 600; text-transform: uppercase; }

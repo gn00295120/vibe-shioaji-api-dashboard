@@ -151,14 +151,15 @@ function renderOrdersTable() {
     }
     
     let html = `<table><thead><tr>
-        <th style="width:50px">#</th>
-        <th>商品</th>
-        <th style="width:70px">動作</th>
-        <th style="width:50px">口數</th>
-        <th style="width:90px">狀態</th>
-        <th>成交</th>
-        <th>時間</th>
-        <th style="width:60px"></th>
+        <th style="width:45px">#</th>
+        <th style="width:160px">商品</th>
+        <th style="width:60px">動作</th>
+        <th style="width:45px">口數</th>
+        <th style="width:70px">狀態</th>
+        <th style="width:130px">成交</th>
+        <th style="width:100px">時間</th>
+        <th>訊息</th>
+        <th style="width:45px"></th>
     </tr></thead><tbody>`;
     
     for (const order of orders) {
@@ -182,28 +183,29 @@ function renderOrdersTable() {
             ? `<button class="recheck-btn" onclick="recheckOrder(${order.id})" title="重新查詢狀態">🔄</button>`
             : '';
         
-        const errorIndicator = order.error_message 
-            ? `<span class="error-indicator" title="${order.error_message}">⚠️</span>` 
-            : '';
+        // Error message - truncate if too long
+        const errorMsg = order.error_message 
+            ? (order.error_message.length > 50 
+                ? `<span title="${order.error_message}" style="color:#ff6b6b;font-size:0.8rem;cursor:help">${order.error_message.substring(0, 50)}...</span>`
+                : `<span style="color:#ff6b6b;font-size:0.8rem">${order.error_message}</span>`)
+            : '<span style="color:#52525b">-</span>';
         
         html += `<tr id="order-row-${order.id}">
-            <td style="color:#71717a">${order.id}</td>
+            <td style="color:#71717a;font-size:0.85rem">${order.id}</td>
             <td>
                 <div style="font-family:'Consolas',monospace">
-                    <span style="color:#00d9ff;font-weight:600">${order.symbol}</span>
-                    ${order.code && order.code !== order.symbol ? `<span style="color:#71717a;font-size:0.75rem;margin-left:4px">${order.code}</span>` : ''}
+                    <span style="color:#00d9ff;font-weight:600;font-size:0.9rem">${order.symbol}</span>
+                    ${order.code && order.code !== order.symbol ? `<br><span style="color:#71717a;font-size:0.7rem">${order.code}</span>` : ''}
                 </div>
             </td>
             <td>
-                <span style="color:${act.color}" title="${actionLabels[order.action] || order.action}">${act.icon} ${act.label}</span>
+                <span style="color:${act.color};font-size:0.85rem" title="${actionLabels[order.action] || order.action}">${act.icon}${act.label}</span>
             </td>
             <td style="text-align:center;font-weight:600">${order.quantity}</td>
-            <td>
-                <span class="status ${statusClass}">${statusText}</span>
-                ${errorIndicator}
-            </td>
-            <td style="font-family:'Consolas',monospace;font-size:0.85rem">${fillInfo}</td>
-            <td style="color:#a1a1aa;font-size:0.85rem">${date}</td>
+            <td><span class="status ${statusClass}">${statusText}</span></td>
+            <td style="font-family:'Consolas',monospace;font-size:0.8rem">${fillInfo}</td>
+            <td style="color:#a1a1aa;font-size:0.8rem">${date}</td>
+            <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis">${errorMsg}</td>
             <td>${recheckBtn}</td>
         </tr>`;
     }
