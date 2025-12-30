@@ -256,7 +256,14 @@ shioaji-api-dashboard/
 ├── database.py          # 資料庫連線
 ├── models.py            # SQLAlchemy 模型
 ├── static/
-│   └── dashboard.html   # Web 控制台
+│   ├── dashboard.html   # Web 控制台 (HTML)
+│   ├── css/
+│   │   └── dashboard.css  # 樣式表
+│   └── js/
+│       └── dashboard.js   # 前端邏輯
+├── db/
+│   ├── migrate.sh       # 資料庫遷移腳本
+│   └── migrations/      # SQL 遷移檔案
 ├── certs/               # CA 憑證 (gitignored)
 ├── docker-compose.yaml  # Docker 編排
 ├── Dockerfile           # Docker 映像
