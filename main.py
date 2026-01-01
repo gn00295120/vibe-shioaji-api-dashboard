@@ -1,9 +1,10 @@
 from contextlib import asynccontextmanager
 import csv
-from datetime import datetime
+from datetime import datetime, timezone
 import io
 import logging
 import os
+import secrets
 import time
 from typing import Literal, Optional
 
@@ -27,9 +28,13 @@ logger = logging.getLogger(__name__)
 ACCEPT_ACTIONS = Literal["long_entry", "long_exit", "short_entry", "short_exit"]
 AUTH_KEY = os.getenv("AUTH_KEY", "changeme")
 BACKEND_API_TOKEN = os.getenv("BACKEND_API_TOKEN", "")  # SaaS 連線用
-ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "*").split(",")
-SUPPORTED_FUTURES = os.getenv("SUPPORTED_FUTURES", "MXF,TXF").split(",")
+ALLOWED_ORIGINS = [origin.strip() for origin in os.getenv("ALLOWED_ORIGINS", "*").split(",")]
+SUPPORTED_FUTURES = [s.strip() for s in os.getenv("SUPPORTED_FUTURES", "MXF,TXF").split(",")]
 VERSION = "1.1.0"
+
+# 啟動時安全警告
+if AUTH_KEY == "changeme" and not BACKEND_API_TOKEN:
+    logger.warning("⚠️  安全警告：未設定認證金鑰，API 處於開放狀態！請設定 AUTH_KEY 或 BACKEND_API_TOKEN")
 
 # Bearer token security (optional)
 security = HTTPBearer(auto_error=False)
@@ -43,17 +48,21 @@ async def verify_auth(
     支援兩種認證方式：
     1. Bearer Token (新): Authorization: Bearer xxx
     2. X-Auth-Key (舊): 保持向下相容
+
+    使用 secrets.compare_digest 防止時序攻擊
     """
-    # 如果 BACKEND_API_TOKEN 已設定，優先檢查 Bearer Token
-    if BACKEND_API_TOKEN:
-        if credentials and credentials.credentials == BACKEND_API_TOKEN:
+    # 檢查 Bearer Token（使用恆定時間比較）
+    if BACKEND_API_TOKEN and credentials:
+        if secrets.compare_digest(credentials.credentials, BACKEND_API_TOKEN):
             return True
 
-    # 向下相容 X-Auth-Key
-    if x_auth_key and x_auth_key == AUTH_KEY:
-        return True
+    # 向下相容 X-Auth-Key（使用恆定時間比較）
+    if x_auth_key and AUTH_KEY != "changeme":
+        if secrets.compare_digest(x_auth_key, AUTH_KEY):
+            return True
 
     # 如果兩種都沒設定，允許通過（向下相容舊版無認證設定）
+    # 注意：這是不安全的，啟動時會有警告
     if not BACKEND_API_TOKEN and AUTH_KEY == "changeme":
         return True
 
@@ -62,7 +71,7 @@ async def verify_auth(
 
 # 保持舊的函數名稱向下相容
 async def verify_auth_key(x_auth_key: str = Header(..., alias="X-Auth-Key")):
-    if x_auth_key != AUTH_KEY:
+    if not secrets.compare_digest(x_auth_key, AUTH_KEY):
         raise HTTPException(status_code=401, detail="Invalid authentication key")
     return x_auth_key
 
@@ -871,7 +880,7 @@ async def api_ping(_: bool = Depends(verify_auth)):
     """連線測試（需認證）"""
     return {
         "status": "pong",
-        "timestamp": datetime.now().isoformat(),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
         "version": VERSION,
     }
 
@@ -886,27 +895,29 @@ async def api_status(_: bool = Depends(verify_auth)):
         queue_client = get_queue_client()
         worker_healthy = queue_client.check_worker_health()
         worker_status = "healthy" if worker_healthy else "unhealthy"
-    except Exception as e:
+    except (ConnectionError, TimeoutError) as e:
         worker_status = "error"
         worker_error = str(e)
 
-    # 檢查資料庫
+    # 檢查資料庫（使用 context manager 避免 crash）
     db_status = "unknown"
+    db = None
     try:
         db = SessionLocal()
         db.execute(text("SELECT 1"))
         db_status = "connected"
-    except Exception:
+    except (SQLAlchemyError, OperationalError):
         db_status = "disconnected"
     finally:
-        db.close()
+        if db is not None:
+            db.close()
 
     return {
         "status": "ok" if worker_status == "healthy" and db_status == "connected" else "degraded",
         "trading_worker": worker_status,
         "trading_worker_error": worker_error,
         "database": db_status,
-        "timestamp": datetime.now().isoformat(),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
     }
 
 
