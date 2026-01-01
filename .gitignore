@@ -30,3 +30,8 @@ postgres_data/
 # Marketing posts (personal)
 docs/MARKETING_POST*
 docs/MEDIUM*
+
+# Claude Code
+.claude/
+.mcp.json
+AGENTS.md
