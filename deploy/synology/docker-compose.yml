@@ -1,0 +1,225 @@
+# Synology NAS Docker Compose Configuration
+#
+# 適用於 Synology NAS + Cloudflare Tunnel 部署
+#
+# 使用方式:
+#   1. 複製到 NAS: /volume1/docker/shioaji-trading/
+#   2. 設定 .env 檔案
+#   3. docker-compose up -d
+#
+# 預設路徑結構:
+#   /volume1/docker/shioaji-trading/
+#   ├── docker-compose.yml
+#   ├── .env
+#   ├── secrets/          # 憑證加密儲存
+#   ├── data/
+#   │   ├── postgres/     # PostgreSQL 資料
+#   │   └── redis/        # Redis 資料
+#   └── logs/             # 應用程式日誌
+
+services:
+  # ============================================================
+  # Database Migration
+  # ============================================================
+  db-migrate:
+    image: postgres:16-alpine
+    container_name: shioaji-db-migrate
+    command: >
+      bash -c "
+        until pg_isready -h db -U postgres; do sleep 1; done
+        for f in /migrations/*.sql; do
+          echo \"Running migration: \$f\"
+          psql -h db -U postgres -d shioaji -f \$f || true
+        done
+        echo 'Migrations complete'
+      "
+    environment:
+      PGPASSWORD: ${POSTGRES_PASSWORD:-postgres}
+    volumes:
+      - ${APP_DIR:-/volume1/docker/shioaji-trading}/migrations:/migrations:ro
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - shioaji-net
+
+  # ============================================================
+  # API Gateway - 對外 API 入口
+  # ============================================================
+  gateway:
+    image: ghcr.io/gn00295120/shioaji-gateway:latest
+    build:
+      context: ${APP_DIR:-/volume1/docker/shioaji-trading}/app
+      dockerfile: Dockerfile
+    container_name: shioaji-gateway
+    restart: unless-stopped
+    command: uvicorn gateway.main:app --host 0.0.0.0 --port 8000 --workers 2
+    ports:
+      - "${GATEWAY_PORT:-9879}:8000"
+    environment:
+      - DATABASE_URL=postgresql://postgres:${POSTGRES_PASSWORD:-postgres}@db:5432/shioaji
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-*}
+      - TZ=${TZ:-Asia/Taipei}
+    volumes:
+      - ${APP_DIR:-/volume1/docker/shioaji-trading}/logs:/app/logs
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      db-migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    networks:
+      - shioaji-net
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
+
+  # ============================================================
+  # Admin API - 租戶管理
+  # ============================================================
+  admin-api:
+    image: ghcr.io/gn00295120/shioaji-admin:latest
+    build:
+      context: ${APP_DIR:-/volume1/docker/shioaji-trading}/app
+      dockerfile: Dockerfile
+    container_name: shioaji-admin
+    restart: unless-stopped
+    command: uvicorn admin.main:app --host 0.0.0.0 --port 8000 --workers 2
+    ports:
+      - "${ADMIN_PORT:-9880}:8000"
+    environment:
+      - DATABASE_URL=postgresql://postgres:${POSTGRES_PASSWORD:-postgres}@db:5432/shioaji
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - CREDENTIAL_MASTER_KEY=${CREDENTIAL_MASTER_KEY}
+      - ADMIN_API_TOKEN=${ADMIN_API_TOKEN}
+      - SECRETS_DIR=/app/secrets
+      - HOST_SECRETS_DIR=${APP_DIR:-/volume1/docker/shioaji-trading}/secrets
+      - DOCKER_HOST=unix:///var/run/docker.sock
+      - WORKER_IMAGE=shioaji-worker:latest
+      - DOCKER_NETWORK=shioaji-trading_shioaji-net
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-*}
+      - TZ=${TZ:-Asia/Taipei}
+    volumes:
+      - ${APP_DIR:-/volume1/docker/shioaji-trading}/secrets:/app/secrets
+      - ${APP_DIR:-/volume1/docker/shioaji-trading}/logs:/app/logs
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      db-migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    networks:
+      - shioaji-net
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
+
+  # ============================================================
+  # Worker Base Image (build only)
+  # ============================================================
+  worker-base:
+    image: shioaji-worker:latest
+    build:
+      context: ${APP_DIR:-/volume1/docker/shioaji-trading}/app
+      dockerfile: Dockerfile.worker
+    container_name: shioaji-worker-base
+    profiles:
+      - build-only
+    networks:
+      - shioaji-net
+
+  # ============================================================
+  # PostgreSQL Database
+  # ============================================================
+  db:
+    image: postgres:16-alpine
+    container_name: shioaji-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: shioaji
+      TZ: ${TZ:-Asia/Taipei}
+    volumes:
+      - ${APP_DIR:-/volume1/docker/shioaji-trading}/data/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d shioaji"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - shioaji-net
+
+  # ============================================================
+  # Redis
+  # ============================================================
+  redis:
+    image: redis:7-alpine
+    container_name: shioaji-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - ${APP_DIR:-/volume1/docker/shioaji-trading}/data/redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - shioaji-net
+
+  # ============================================================
+  # Cloudflare Tunnel (免開 Port 對外)
+  # ============================================================
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: shioaji-tunnel
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      - TUNNEL_TOKEN=${CLOUDFLARE_TUNNEL_TOKEN}
+    depends_on:
+      - gateway
+      - admin-api
+    networks:
+      - shioaji-net
+
+  # ============================================================
+  # Watchtower - 自動更新容器 (選用)
+  # ============================================================
+  watchtower:
+    image: containrrr/watchtower
+    container_name: shioaji-watchtower
+    restart: unless-stopped
+    profiles:
+      - auto-update
+    environment:
+      - WATCHTOWER_CLEANUP=true
+      - WATCHTOWER_POLL_INTERVAL=86400  # 每天檢查一次
+      - WATCHTOWER_LABEL_ENABLE=true
+      - TZ=${TZ:-Asia/Taipei}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - shioaji-net
+
+networks:
+  shioaji-net:
+    driver: bridge
+    name: shioaji-trading_shioaji-net

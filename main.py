@@ -1,9 +1,10 @@
 from contextlib import asynccontextmanager
 import csv
-from datetime import datetime
+from datetime import datetime, timezone
 import io
 import logging
 import os
+import secrets
 import time
 from typing import Literal, Optional
 
@@ -11,6 +12,7 @@ from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Header, Qu
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -25,10 +27,51 @@ logger = logging.getLogger(__name__)
 
 ACCEPT_ACTIONS = Literal["long_entry", "long_exit", "short_entry", "short_exit"]
 AUTH_KEY = os.getenv("AUTH_KEY", "changeme")
+BACKEND_API_TOKEN = os.getenv("BACKEND_API_TOKEN", "")  # SaaS 連線用
+ALLOWED_ORIGINS = [origin.strip() for origin in os.getenv("ALLOWED_ORIGINS", "*").split(",")]
+SUPPORTED_FUTURES = [s.strip() for s in os.getenv("SUPPORTED_FUTURES", "MXF,TXF").split(",")]
+VERSION = "1.1.0"
+
+# 啟動時安全警告
+if AUTH_KEY == "changeme" and not BACKEND_API_TOKEN:
+    logger.warning("⚠️  安全警告：未設定認證金鑰，API 處於開放狀態！請設定 AUTH_KEY 或 BACKEND_API_TOKEN")
+
+# Bearer token security (optional)
+security = HTTPBearer(auto_error=False)
 
 
+async def verify_auth(
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+    x_auth_key: str = Header(None, alias="X-Auth-Key"),
+):
+    """
+    支援兩種認證方式：
+    1. Bearer Token (新): Authorization: Bearer xxx
+    2. X-Auth-Key (舊): 保持向下相容
+
+    使用 secrets.compare_digest 防止時序攻擊
+    """
+    # 檢查 Bearer Token（使用恆定時間比較）
+    if BACKEND_API_TOKEN and credentials:
+        if secrets.compare_digest(credentials.credentials, BACKEND_API_TOKEN):
+            return True
+
+    # 向下相容 X-Auth-Key（使用恆定時間比較）
+    if x_auth_key and AUTH_KEY != "changeme":
+        if secrets.compare_digest(x_auth_key, AUTH_KEY):
+            return True
+
+    # 如果兩種都沒設定，允許通過（向下相容舊版無認證設定）
+    # 注意：這是不安全的，啟動時會有警告
+    if not BACKEND_API_TOKEN and AUTH_KEY == "changeme":
+        return True
+
+    raise HTTPException(status_code=401, detail="Invalid authentication")
+
+
+# 保持舊的函數名稱向下相容
 async def verify_auth_key(x_auth_key: str = Header(..., alias="X-Auth-Key")):
-    if x_auth_key != AUTH_KEY:
+    if not secrets.compare_digest(x_auth_key, AUTH_KEY):
         raise HTTPException(status_code=401, detail="Invalid authentication key")
     return x_auth_key
 
@@ -72,13 +115,23 @@ async def lifespan(app: FastAPI):
     # Shutdown (cleanup if needed)
 
 
-app = FastAPI(lifespan=lifespan)
+app = FastAPI(
+    title="Shioaji Trading API",
+    description="台灣期貨自動交易 API",
+    version=VERSION,
+    lifespan=lifespan,
+)
+
+# CORS 配置（支援 SaaS 前端連線）
+# 注意：allow_credentials=True 時不能用 ["*"]，需明確列出 origins
+_cors_origins = ALLOWED_ORIGINS if ALLOWED_ORIGINS != ["*"] else []
+_allow_all = len(_cors_origins) == 0 or _cors_origins == ["*"]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
+    allow_origins=["*"] if _allow_all else _cors_origins,
+    allow_credentials=not _allow_all,  # 只有明確列出 origins 時才啟用 credentials
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
     allow_headers=["*"],
 )
 
@@ -816,3 +869,122 @@ async def health_check():
 async def dashboard():
     """Serve the dashboard HTML page."""
     return FileResponse(os.path.join(STATIC_DIR, "dashboard.html"), media_type="text/html")
+
+
+# ============================================
+# API v1 端點 - 供 SaaS 前端使用
+# ============================================
+
+@app.get("/api/v1/ping")
+async def api_ping(_: bool = Depends(verify_auth)):
+    """連線測試（需認證）"""
+    return {
+        "status": "pong",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "version": VERSION,
+    }
+
+
+@app.get("/api/v1/status")
+async def api_status(_: bool = Depends(verify_auth)):
+    """系統狀態（需認證）"""
+    # 檢查 Trading Worker
+    worker_status = "unknown"
+    worker_error = None
+    try:
+        queue_client = get_queue_client()
+        worker_healthy = queue_client.check_worker_health()
+        worker_status = "healthy" if worker_healthy else "unhealthy"
+    except (ConnectionError, TimeoutError) as e:
+        worker_status = "error"
+        worker_error = str(e)
+
+    # 檢查資料庫（使用 context manager 避免 crash）
+    db_status = "unknown"
+    db = None
+    try:
+        db = SessionLocal()
+        db.execute(text("SELECT 1"))
+        db_status = "connected"
+    except (SQLAlchemyError, OperationalError):
+        db_status = "disconnected"
+    finally:
+        if db is not None:
+            db.close()
+
+    return {
+        "status": "ok" if worker_status == "healthy" and db_status == "connected" else "degraded",
+        "trading_worker": worker_status,
+        "trading_worker_error": worker_error,
+        "database": db_status,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+@app.get("/api/v1/info")
+async def api_info():
+    """後端資訊（公開）"""
+    return {
+        "name": "Shioaji Trading Backend",
+        "version": VERSION,
+        "api_version": "v1",
+        "features": ["orders", "positions", "symbols", "webhook", "export"],
+        "supported_futures": SUPPORTED_FUTURES,
+        "documentation": "/docs",
+    }
+
+
+# API v1 別名（使用新的 verify_auth）
+@app.get("/api/v1/orders")
+async def api_get_orders(
+    db: Session = Depends(get_db),
+    _: bool = Depends(verify_auth),
+    symbol: Optional[str] = Query(None, description="Filter by symbol"),
+    action: Optional[str] = Query(None, description="Filter by action"),
+    status: Optional[str] = Query(None, description="Filter by status"),
+    start_date: Optional[datetime] = Query(None, description="Filter from date"),
+    end_date: Optional[datetime] = Query(None, description="Filter to date"),
+    limit: int = Query(100, ge=1, le=1000, description="Limit results"),
+    offset: int = Query(0, ge=0, description="Offset for pagination"),
+):
+    """取得委託紀錄（API v1）"""
+    query = db.query(OrderHistory)
+
+    if symbol:
+        query = query.filter(OrderHistory.symbol == symbol)
+    if action:
+        query = query.filter(OrderHistory.action == action)
+    if status:
+        query = query.filter(OrderHistory.status == status)
+    if start_date:
+        query = query.filter(OrderHistory.created_at >= start_date)
+    if end_date:
+        query = query.filter(OrderHistory.created_at <= end_date)
+
+    orders = query.order_by(OrderHistory.created_at.desc()).offset(offset).limit(limit).all()
+    total = query.count()
+
+    return {
+        "orders": [order.to_dict() for order in orders],
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }
+
+
+@app.get("/api/v1/positions")
+async def api_get_positions(
+    _: bool = Depends(verify_auth),
+    simulation: bool = Query(True, description="Use simulation mode"),
+):
+    """取得持倉（API v1）"""
+    try:
+        queue_client = get_queue_client()
+        response = queue_client.get_positions(simulation=simulation)
+
+        if not response.success:
+            raise HTTPException(status_code=503, detail=response.error)
+
+        return response.data
+    except (TimeoutError, ConnectionError) as e:
+        raise HTTPException(status_code=503, detail=f"Trading service unavailable: {e}")
